@@ -69,6 +69,10 @@ except Exception as e:
     st.error(f"Error initializing Pinecone: {str(e)}")
     st.stop()
 
+# Initialize memory with output_key
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key="answer")
+
+
 # Initialize LangChain components
 try:
     logger.info("Initializing LangChain components...")
@@ -113,6 +117,7 @@ conv_qa_chain = ConversationalRetrievalChain.from_llm(
     return_source_documents=True,
     callbacks=[tracer]
 )
+
 
 def process_document(file):
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -194,8 +199,7 @@ def main():
     for message in st.session_state.messages:
         display_chat_message(message['text'], message['is_user'])
 
-    # Chat input
-    query = st.text_input("Ask a question about the uploaded documents:")
+   query = st.text_input("Ask a question about the uploaded documents:")
     if query:
         display_chat_message(query, is_user=True)
         st.session_state.messages.append({"text": query, "is_user": True})
@@ -210,7 +214,7 @@ def main():
         # Save conversation to Pinecone
         save_conversation(query, answer)
 
-        if sources:
+          if sources:
             st.subheader("Sources:")
             for source in sources:
                 st.write(f"- {source.metadata.get('source', 'Unknown source')}")
