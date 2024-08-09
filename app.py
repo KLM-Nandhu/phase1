@@ -122,6 +122,5 @@ def main():
     if query:
         # Process query and generate response
         # ... [Keep this part as it was in the original code] ...
-
 if __name__ == "__main__":
     main()
