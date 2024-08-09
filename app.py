@@ -1,5 +1,5 @@
 import streamlit as st
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
@@ -22,63 +22,44 @@ logger = logging.getLogger(__name__)
 st.set_page_config(layout="wide", page_title="Gradient Cyber QA Chatbot")
 
 # Set environment variables
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY
-os.environ["PINECONE_ENV"] = PINECONE_ENV
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGCHAIN_API_KEY"] = LANGCHAIN_API_KEY
-os.environ["LANGCHAIN_PROJECT"] = "gradient_cyber_customer_bot"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENV = os.getenv("PINECONE_ENV")
+LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
 
 # Verify environment variables
-logger.info(f"OPENAI_API_KEY set: {'OPENAI_API_KEY' in os.environ}")
-logger.info(f"PINECONE_API_KEY set: {'PINECONE_API_KEY' in os.environ}")
-logger.info(f"PINECONE_ENV set: {'PINECONE_ENV' in os.environ}")
+if not all([OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_ENV, LANGCHAIN_API_KEY]):
+    st.error("Missing required environment variables. Please set all required API keys.")
+    st.stop()
+
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+os.environ["LANGCHAIN_PROJECT"] = "gradient_cyber_customer_bot"
 
 # Initialize Pinecone
 try:
     logger.info("Initializing Pinecone...")
-    pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+    pc = Pinecone(api_key=PINECONE_API_KEY)
     logger.info("Pinecone initialized successfully.")
     
-    doc_index_name = "gradientcyber"
-    conv_index_name = "conversationhistory"
+    index_name = "gradientcyber"  # Use your existing index name
 
-    # Check if indices exist, if not create them
-    existing_indexes = pc.list_indexes().names()
-    logger.info(f"Existing Pinecone indexes: {existing_indexes}")
+    # Check if the index exists
+    if index_name not in pc.list_indexes().names():
+        logger.error(f"Index '{index_name}' does not exist in Pinecone.")
+        st.error(f"Index '{index_name}' does not exist in Pinecone. Please create the index first.")
+        st.stop()
 
-    if doc_index_name not in existing_indexes:
-        logger.info(f"Creating index: {doc_index_name}")
-        pc.create_index(
-            name=doc_index_name,
-            dimension=1536,
-            metric='cosine',
-            spec=ServerlessSpec(cloud='aws', region=PINECONE_ENV)
-        )
-    if conv_index_name not in existing_indexes:
-        logger.info(f"Creating index: {conv_index_name}")
-        pc.create_index(
-            name=conv_index_name,
-            dimension=1536,
-            metric='cosine',
-            spec=ServerlessSpec(cloud='aws', region=PINECONE_ENV)
-        )
 except Exception as e:
     logger.error(f"Error initializing Pinecone: {str(e)}")
     st.error(f"Error initializing Pinecone: {str(e)}")
     st.stop()
 
-# Initialize memory with output_key
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key="answer")
-
-
 # Initialize LangChain components
 try:
     logger.info("Initializing LangChain components...")
     embeddings = OpenAIEmbeddings()
-    doc_vectorstore = LangchainPinecone.from_existing_index(doc_index_name, embeddings)
-    conv_vectorstore = LangchainPinecone.from_existing_index(conv_index_name, embeddings)
+    vectorstore = LangchainPinecone.from_existing_index(index_name, embeddings)
     llm = ChatOpenAI(temperature=0.3, model_name="gpt-4")
     logger.info("LangChain components initialized successfully.")
 except Exception as e:
@@ -90,7 +71,7 @@ except Exception as e:
 tracer = LangChainTracer(project_name="gradient_cyber_customer_bot")
 
 # Initialize memory
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key="answer")
 
 # Custom prompt template
 qa_template = """
@@ -111,13 +92,12 @@ qa_prompt = PromptTemplate(
 # Initialize Conversational Retrieval Chain
 conv_qa_chain = ConversationalRetrievalChain.from_llm(
     llm=llm,
-    retriever=doc_vectorstore.as_retriever(),
+    retriever=vectorstore.as_retriever(),
     memory=memory,
     combine_docs_chain_kwargs={"prompt": qa_prompt},
     return_source_documents=True,
     callbacks=[tracer]
 )
-
 
 def process_document(file):
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -133,18 +113,18 @@ def process_document(file):
     return texts
 
 def upsert_to_pinecone(texts):
-    doc_vectorstore.add_documents(texts)
+    vectorstore.add_documents(texts)
 
 def save_conversation(question, answer):
     conversation_id = str(uuid.uuid4())
-    conv_vectorstore.add_texts(
+    vectorstore.add_texts(
         texts=[f"Q: {question}\nA: {answer}"],
         metadatas=[{"conversation_id": conversation_id}],
         ids=[conversation_id]
     )
 
 def get_conversation_history():
-    results = conv_vectorstore.similarity_search("", k=100)
+    results = vectorstore.similarity_search("", k=100)
     return [doc.page_content for doc in results]
 
 def display_chat_message(text, is_user=False):
@@ -162,7 +142,7 @@ def display_chat_message(text, is_user=False):
         """, unsafe_allow_html=True)
 
 def main():
-    st.title("Phase 1")
+    st.title("Gradient Cyber QA Chatbot")
 
     # Sidebar
     st.sidebar.title("Document Upload")
@@ -199,7 +179,8 @@ def main():
     for message in st.session_state.messages:
         display_chat_message(message['text'], message['is_user'])
 
-   query = st.text_input("Ask a question about the uploaded documents:")
+    # Chat input
+    query = st.text_input("Ask a question about the uploaded documents:")
     if query:
         display_chat_message(query, is_user=True)
         st.session_state.messages.append({"text": query, "is_user": True})
@@ -214,7 +195,7 @@ def main():
         # Save conversation to Pinecone
         save_conversation(query, answer)
 
-          if sources:
+        if sources:
             st.subheader("Sources:")
             for source in sources:
                 st.write(f"- {source.metadata.get('source', 'Unknown source')}")
