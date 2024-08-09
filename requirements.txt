@@ -5,3 +5,4 @@ openai==0.27.8
 PyPDF2==3.0.1
 python-docx==0.8.11
 setuptools>=65.5.1
+pillow==9.5.0 --only-binary=:all:
