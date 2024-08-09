@@ -16,23 +16,23 @@ import tempfile
 st.set_page_config(layout="wide", page_title="Advanced Document QA Chatbot")
 
 # Set up your API keys and environment variables
-os.environ["OPENAI_API_KEY"] = "your-openai-api-key"
-os.environ["PINECONE_API_KEY"] = "your-pinecone-api-key"
-os.environ["PINECONE_ENV"] = "your-pinecone-environment"
+os.environ["OPENAI_API_KEY"] = "LANGCHAIN_API_KEY "
+os.environ["PINECONE_API_KEY"] = "PINECONE_API_KEY"
+os.environ["PINECONE_ENV"] = "us-east-1"
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGCHAIN_API_KEY"] = "your-langsmith-api-key"
+os.environ["LANGCHAIN_API_KEY"] = "LANGCHAIN_API_KEY"
 
 # Initialize Pinecone
 pinecone.init(api_key=os.environ["PINECONE_API_KEY"], environment=os.environ["PINECONE_ENV"])
-doc_index_name = "your-document-index-name"
-conv_index_name = "your-conversation-index-name"
+doc_index_name = "gradient_cyber_customer_bot"
+conv_index_name = "conversationhistory"
 
 # Initialize LangChain components
 embeddings = OpenAIEmbeddings()
 doc_vectorstore = Pinecone.from_existing_index(doc_index_name, embeddings)
 conv_vectorstore = Pinecone.from_existing_index(conv_index_name, embeddings)
-llm = ChatOpenAI(temperature=0, model_name="gpt-4-0613")
+llm = ChatOpenAI(temperature=0.3, model_name="gpt-4o")
 
 # Initialize LangSmith tracer
 tracer = LangChainTracer(project_name="advanced-document-qa-chatbot")
