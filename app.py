@@ -1,5 +1,5 @@
 import streamlit as st
-from pinecone import Pinecone
+import pinecone
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
@@ -39,15 +39,19 @@ os.environ["LANGCHAIN_PROJECT"] = "gradient_cyber_customer_bot"
 # Initialize Pinecone
 try:
     logger.info("Initializing Pinecone...")
-    pc = Pinecone(api_key=PINECONE_API_KEY)
+    pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
     logger.info("Pinecone initialized successfully.")
     
-    index_name = "gradientcyber"  # Use your existing index name
+    doc_index_name = "gradientcyber"
+    conv_index_name = "conversationhistory"
 
-    # Check if the index exists
-    if index_name not in pc.list_indexes().names():
-        logger.error(f"Index '{index_name}' does not exist in Pinecone.")
-        st.error(f"Index '{index_name}' does not exist in Pinecone. Please create the index first.")
+    # Check if indices exist
+    existing_indexes = pinecone.list_indexes()
+    logger.info(f"Existing Pinecone indexes: {existing_indexes}")
+
+    if doc_index_name not in existing_indexes or conv_index_name not in existing_indexes:
+        logger.error(f"Required indexes do not exist in Pinecone.")
+        st.error(f"Required Pinecone indexes do not exist. Please ensure both '{doc_index_name}' and '{conv_index_name}' are created.")
         st.stop()
 
 except Exception as e:
@@ -59,7 +63,8 @@ except Exception as e:
 try:
     logger.info("Initializing LangChain components...")
     embeddings = OpenAIEmbeddings()
-    vectorstore = LangchainPinecone.from_existing_index(index_name, embeddings)
+    doc_vectorstore = LangchainPinecone.from_existing_index(doc_index_name, embeddings)
+    conv_vectorstore = LangchainPinecone.from_existing_index(conv_index_name, embeddings)
     llm = ChatOpenAI(temperature=0.3, model_name="gpt-4")
     logger.info("LangChain components initialized successfully.")
 except Exception as e:
@@ -92,7 +97,7 @@ qa_prompt = PromptTemplate(
 # Initialize Conversational Retrieval Chain
 conv_qa_chain = ConversationalRetrievalChain.from_llm(
     llm=llm,
-    retriever=vectorstore.as_retriever(),
+    retriever=doc_vectorstore.as_retriever(),
     memory=memory,
     combine_docs_chain_kwargs={"prompt": qa_prompt},
     return_source_documents=True,
@@ -113,18 +118,18 @@ def process_document(file):
     return texts
 
 def upsert_to_pinecone(texts):
-    vectorstore.add_documents(texts)
+    doc_vectorstore.add_documents(texts)
 
 def save_conversation(question, answer):
     conversation_id = str(uuid.uuid4())
-    vectorstore.add_texts(
+    conv_vectorstore.add_texts(
         texts=[f"Q: {question}\nA: {answer}"],
         metadatas=[{"conversation_id": conversation_id}],
         ids=[conversation_id]
     )
 
 def get_conversation_history():
-    results = vectorstore.similarity_search("", k=100)
+    results = conv_vectorstore.similarity_search("", k=100)
     return [doc.page_content for doc in results]
 
 def display_chat_message(text, is_user=False):
