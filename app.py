@@ -13,6 +13,7 @@ import os
 import tempfile
 import uuid
 import logging
+import socket
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -36,9 +37,23 @@ os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
 os.environ["LANGCHAIN_PROJECT"] = "gradient_cyber_customer_bot"
 
+# Function to check if a host is reachable
+def is_host_reachable(host, port=443, timeout=5):
+    try:
+        socket.create_connection((host, port), timeout=timeout)
+        return True
+    except OSError:
+        return False
+
 # Initialize Pinecone
 try:
-    logger.info("Initializing Pinecone...")
+    logger.info(f"Initializing Pinecone with environment: {PINECONE_ENV}")
+    
+    # Check if Pinecone host is reachable
+    pinecone_host = f"controller.{PINECONE_ENV}.pinecone.io"
+    if not is_host_reachable(pinecone_host):
+        raise ConnectionError(f"Cannot reach Pinecone host: {pinecone_host}")
+    
     pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
     logger.info("Pinecone initialized successfully.")
     
@@ -57,6 +72,11 @@ try:
 except Exception as e:
     logger.error(f"Error initializing Pinecone: {str(e)}")
     st.error(f"Error initializing Pinecone: {str(e)}")
+    
+    # Additional diagnostic information
+    st.error(f"Pinecone Environment: {PINECONE_ENV}")
+    st.error(f"Is Pinecone host reachable: {is_host_reachable(pinecone_host)}")
+    st.error("Please check your network connection and Pinecone environment settings.")
     st.stop()
 
 # Initialize LangChain components
