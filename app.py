@@ -26,7 +26,7 @@ st.set_page_config(page_title="Gradient Cyber Bot", page_icon="🤖", layout="wi
 # Initialize Pinecone
 try:
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-    index_name = os.getenv("PINECONE_INDEX_NAME")
+    index_name = "gradientcyber"
 
     # Check if the index exists
     existing_indexes = pc.list_indexes().names()
@@ -40,7 +40,7 @@ try:
                 metric='cosine',
                 spec=ServerlessSpec(
                     cloud='aws',
-                    region='us-west-2'  # Adjust this to your preferred region
+                    region='us-west-1'  # Adjust this to your preferred region
                 )
             )
             logger.info(f"Successfully created index '{index_name}'.")
