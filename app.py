@@ -256,22 +256,15 @@ if prompt:
 
     # Process the query
     with st.spinner("Thinking..."):
-        # Step 1: Setup and Configuration
-        # LangChain setup is not explicitly shown here, but it's conceptually part of the initial setup
-
-        # Step 2: Data Preparation and Embedding
         # Generate query embedding
         query_embedding = generate_embedding(prompt)
         
-        # Step 3: Query Processing
         # Optionally expand the query
         expanded_query = expand_query(prompt)
         
-        # Step 4: Retrieval with Pinecone Serverless
         # Retrieve relevant documents
         results = hybrid_search(index, query_embedding, expanded_query, top_k=5)
         
-        # Step 5: Context Processing
         # Re-rank results
         reranked_results = rerank_results(results, prompt)
         
@@ -279,19 +272,11 @@ if prompt:
         context = process_results(reranked_results)
         compressed_context = apply_contextual_compression(context)
         
-        # Step 6: Answer Generation
         # Generate answer
         answer = generate_answer(prompt, compressed_context)
         
-        # Step 7: Post-processing and Formatting
         # Format and display answer
         formatted_answer = format_answer(answer, reranked_results)
-
-        # Step 8: Caching and Optimization
-        # Caching is implemented using lru_cache decorators on some functions
-
-        # Step 9: Continuous Improvement
-        # This would involve analyzing user feedback and refining the system over time
 
     st.session_state.messages.append({"role": "assistant", "content": formatted_answer})
     with st.chat_message("assistant"):
@@ -310,5 +295,3 @@ if uploaded_file is not None:
 
         os.unlink(tmp_file_path)
     st.sidebar.success("Document processed and uploaded successfully!")
-
-# Steps 10-16 are conceptual and would involve further development, monitoring, and maintenance of the system
