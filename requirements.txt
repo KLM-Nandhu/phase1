@@ -1,8 +1,8 @@
-streamlit
-pinecone-client
-openai
-python-dotenv
-langsmith
-aiohttp
-tiktoken
-PyPDF2
+streamlit==1.29.0
+pinecone-client==2.2.4
+openai==1.6.1
+python-dotenv==1.0.0
+langsmith==0.0.69
+aiohttp==3.9.1
+tiktoken==0.5.2
+PyPDF2==3.0.1
