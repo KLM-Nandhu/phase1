@@ -1,48 +1,37 @@
 import streamlit as st
-from pinecone import Pinecone
-from openai import OpenAI
+import pinecone
+import openai
+from langsmith import Client
+from langsmith.run_trees import RunTree
 import os
 from dotenv import load_dotenv
-from langsmith import Client
 import uuid
-import asyncio
-import aiohttp
-from typing import List, Dict
 import tempfile
-import tiktoken
+import PyPDF2
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+import time
+import asyncio
 
 # Load environment variables
 load_dotenv()
 
-# Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = "gpt-4o"
-EMBEDDING_MODEL = "text-embedding-ada-002"
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = "gradientcyber"
-LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
-LANGCHAIN_PROJECT = "gradientcyber_customer_bot"
-MAX_TOKENS = 4096
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
-CACHE_EXPIRATION = 3600  # 1 hour
+# Initialize Pinecone (Serverless)
+pinecone.init(api_key=os.getenv("PINECONE_API_KEY"))
+index = pinecone.Index(os.getenv("PINECONE_INDEX_NAME"))
 
-# Initialize clients
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(PINECONE_INDEX_NAME)
+# Initialize OpenAI
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# Initialize LangSmith
 langsmith_client = Client()
 
-# Helper functions (unchanged)
-# ... (include all the helper functions from the previous implementation)
-
-# Streamlit UI
-st.set_page_config(layout="wide", page_title="Gradient Cyber Bot", page_icon="🤖")
-
-# Custom CSS for improved UI
+# Custom CSS (as provided earlier)
 st.markdown(
     """
-    <style>
+      <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
     
     body {
@@ -176,17 +165,19 @@ st.markdown(
 st.title("🤖 Gradient Cyber Bot")
 
 # Sidebar
-with st.sidebar:
-    st.title("Options")
-    
-    # File upload
-    uploaded_file = st.file_uploader("Upload a document", type=["txt", "pdf"])
-    
-    # Reset button
-    if st.button("Reset Conversation"):
-        st.session_state.messages = []
+st.sidebar.title("Settings")
 
-# Initialize conversation history
+# Reset button
+if st.sidebar.button("Reset Conversation"):
+    st.session_state.conversation_history = []
+    st.session_state.messages = []
+
+# File uploader
+uploaded_file = st.sidebar.file_uploader("Upload a document", type=["txt", "pdf"])
+
+# Initialize session state
+if "conversation_history" not in st.session_state:
+    st.session_state.conversation_history = []
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -195,71 +186,187 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Main chat input
-prompt = st.chat_input("What is your question?")
-if prompt:
+# Function to get embeddings
+def get_embedding(text):
+    with RunTree.with_langsmith_tracer(langsmith_client, project_name="RAG_System") as tracer:
+        response = openai.Embedding.create(
+            input=text,
+            model="text-embedding-ada-002"
+        )
+        tracer.add_metadata("embedding_tokens", response['usage']['total_tokens'])
+        return response['data'][0]['embedding']
+
+# Function to upsert documents to Pinecone
+def upsert_to_pinecone(text, metadata=None):
+    embedding = get_embedding(text)
+    unique_id = str(uuid.uuid4())
+    index.upsert(vectors=[(unique_id, embedding, metadata)])
+
+# Function to process uploaded file
+def process_uploaded_file(file):
+    if file.type == "text/plain":
+        content = file.getvalue().decode("utf-8")
+    elif file.type == "application/pdf":
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            temp_file.write(file.getvalue())
+            temp_file_path = temp_file.name
+
+        with open(temp_file_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            content = "\n".join([page.extract_text() for page in pdf_reader.pages])
+
+        os.unlink(temp_file_path)
+
+    chunks = [content[i:i+1000] for i in range(0, len(content), 1000)]
+    for chunk in chunks:
+        upsert_to_pinecone(chunk, {"source": file.name})
+
+    st.sidebar.success(f"File '{file.name}' processed and uploaded to Pinecone.")
+
+# Process uploaded file
+if uploaded_file:
+    process_uploaded_file(uploaded_file)
+
+# Function to expand query
+def expand_query(query):
+    with RunTree.with_langsmith_tracer(langsmith_client, project_name="RAG_System") as tracer:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that generates related search queries."},
+                {"role": "user", "content": f"Generate 3 related search queries for: {query}"}
+            ],
+            max_tokens=100
+        )
+        expanded_queries = response.choices[0].message['content'].split('\n')
+        tracer.add_metadata("expanded_queries", expanded_queries)
+        return [query] + expanded_queries
+
+# Function to query Pinecone and get relevant context
+async def get_context(query, k=3):
+    with RunTree.with_langsmith_tracer(langsmith_client, project_name="RAG_System") as tracer:
+        query_embedding = get_embedding(query)
+        start_time = time.time()
+        results = index.query(vector=query_embedding, top_k=k, include_metadata=True)
+        query_time = time.time() - start_time
+        tracer.add_metadata("query_time", query_time)
+        context = " ".join([result.metadata.get("text", "") for result in results.matches])
+        return context, results.matches
+
+# Function to re-rank results
+def re_rank_results(query, results):
+    with RunTree.with_langsmith_tracer(langsmith_client, project_name="RAG_System") as tracer:
+        texts = [result.metadata.get("text", "") for result in results]
+        tfidf = TfidfVectorizer().fit_transform([query] + texts)
+        cosine_similarities = cosine_similarity(tfidf[0:1], tfidf[1:]).flatten()
+        ranked_indices = np.argsort(cosine_similarities)[::-1]
+        re_ranked_results = [results[i] for i in ranked_indices]
+        tracer.add_metadata("re_ranked_results", [r.id for r in re_ranked_results])
+        return re_ranked_results
+
+# Function for contextual compression
+def compress_context(context, query):
+    with RunTree.with_langsmith_tracer(langsmith_client, project_name="RAG_System") as tracer:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that summarizes information."},
+                {"role": "user", "content": f"Summarize the following context, focusing on information relevant to the query: '{query}'\n\nContext: {context}"}
+            ],
+            max_tokens=150
+        )
+        compressed_context = response.choices[0].message['content']
+        tracer.add_metadata("compressed_context_length", len(compressed_context))
+        return compressed_context
+
+# Function to generate response using OpenAI
+async def generate_response(prompt):
+    with RunTree.with_langsmith_tracer(langsmith_client, project_name="RAG_System") as tracer:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=150
+        )
+        tracer.add_metadata("response_tokens", response['usage']['total_tokens'])
+        return response.choices[0].message['content']
+
+# Semantic cache
+semantic_cache = {}
+
+# Function to check semantic cache
+def check_semantic_cache(query):
+    query_embedding = get_embedding(query)
+    for cached_query, (cached_embedding, cached_response) in semantic_cache.items():
+        similarity = cosine_similarity([query_embedding], [cached_embedding])[0][0]
+        if similarity > 0.95:  # Threshold for semantic similarity
+            return cached_response
+    return None
+
+# Main chat interface
+async def process_query(prompt):
+    cached_response = check_semantic_cache(prompt)
+    if cached_response:
+        return f"(Cached) {cached_response}"
+
+    expanded_queries = expand_query(prompt)
+    contexts = []
+    
+    async def process_single_query(query):
+        context, results = await get_context(query)
+        re_ranked = re_rank_results(query, results)
+        compressed = compress_context(" ".join([r.metadata.get("text", "") for r in re_ranked[:2]]), query)
+        return compressed
+
+    with ThreadPoolExecutor() as executor:
+        loop = asyncio.get_event_loop()
+        contexts = await asyncio.gather(*[loop.run_in_executor(executor, process_single_query, query) for query in expanded_queries])
+
+    full_context = " ".join(contexts)
+    full_prompt = f"Context: {full_context}\n\nQuestion: {prompt}\n\nAnswer:"
+    response = await generate_response(full_prompt)
+    
+    # Update semantic cache
+    semantic_cache[prompt] = (get_embedding(prompt), response)
+    
+    return response
+
+if prompt := st.chat_input("What is your question?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Process the query
-    with st.spinner("Thinking..."):
-        # Start LangSmith trace
-        with langsmith_client.trace(project_name=LANGCHAIN_PROJECT, name="query_processing") as trace:
-            # Generate query embedding
-            query_embedding = generate_embedding(prompt)
-            
-            # Retrieve relevant documents
-            results = hybrid_search(index, query_embedding, prompt, top_k=5)
-            
-            # Process and prepare context
-            context = process_results(results)
-            
-            # Generate answer
-            answer = generate_answer(prompt, context)
-            
-            # Format and display answer
-            formatted_answer = format_answer(answer, results)
-            
-            # Log metrics
-            trace.add_metadata({
-                "query_tokens": count_tokens(prompt),
-                "response_tokens": count_tokens(answer),
-                "num_results": len(results)
-            })
-
-    st.session_state.messages.append({"role": "assistant", "content": formatted_answer})
     with st.chat_message("assistant"):
-        st.markdown(formatted_answer)
+        response = asyncio.run(process_query(prompt))
+        st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
 
-# Handle file upload
-if uploaded_file is not None:
-    with st.spinner("Processing and uploading document..."):
-        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_file_path = tmp_file.name
+    # Update conversation history
+    st.session_state.conversation_history.append({"prompt": prompt, "response": response})
 
-        # Process and upload the document
-        chunks = process_document(tmp_file_path)
-        asyncio.run(upload_to_pinecone(chunks, index))
+# Display full conversation history
+st.sidebar.title("Conversation History")
+for i, exchange in enumerate(st.session_state.conversation_history):
+    st.sidebar.subheader(f"Exchange {i+1}")
+    st.sidebar.write(f"User: {exchange['prompt']}")
+    st.sidebar.write(f"Assistant: {exchange['response']}")
+    st.sidebar.write("---")
 
-        os.unlink(tmp_file_path)
-    st.sidebar.success("Document processed and uploaded successfully!")
+# LangSmith Integration for Monitoring
+@st.cache_data
+def get_langsmith_metrics():
+    # This is a placeholder. In a real implementation, you would fetch metrics from LangSmith API
+    return {
+        "average_response_time": 1.5,
+        "total_queries": 100,
+        "successful_queries": 95,
+    }
 
-# Add scroll to bottom button
-st.markdown("""
-<button id="scroll-to-bottom">↓</button>
-<script>
-    var button = document.querySelector('#scroll-to-bottom');
-    button.addEventListener('click', function() {
-        window.scrollTo(0, document.body.scrollHeight);
-    });
-    window.addEventListener('scroll', function() {
-        if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight) {
-            button.style.display = 'none';
-        } else {
-            button.style.display = 'flex';
-        }
-    });
-</script>
-""", unsafe_allow_html=True)
+# Display LangSmith metrics
+st.sidebar.title("System Metrics")
+metrics = get_langsmith_metrics()
+st.sidebar.metric("Avg Response Time", f"{metrics['average_response_time']:.2f}s")
+st.sidebar.metric("Total Queries", metrics['total_queries'])
+st.sidebar.metric("Success Rate", f"{metrics['successful_queries'] / metrics['total_queries'] * 100:.1f}%")
