@@ -1,8 +1,8 @@
-streamlit==1.24.0
-pinecone-client==2.2.2
-openai==0.27.8
-python-dotenv==1.0.0
-langsmith==0.0.21
-PyPDF2==3.0.1
-scikit-learn==1.0.2
-numpy==1.21.5
+streamlit
+pinecone-client
+openai
+python-dotenv
+langsmith
+PyPDF2
+scikit-learn
+numpy
