@@ -1,10 +1,9 @@
-streamlit==1.26.0
+streamlit==1.29.0
 pinecone-client==2.2.4
-openai==0.27.8
+openai==1.6.1
 python-dotenv==1.0.0
-langsmith==0.0.41
-aiohttp==3.8.5 --only-binary :all:
-tiktoken==0.4.0 --only-binary :all:
-asyncio==3.4.3
+langsmith==0.0.69
+aiohttp==3.9.1
+tiktoken==0.5.2
 PyPDF2==3.0.1
-Pillow==9.5.0 --only-binary :all:
+Pillow==10.1.0
