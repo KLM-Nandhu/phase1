@@ -1,6 +1,10 @@
-streamlit==1.28.0
+streamlit==1.26.0
 pinecone-client==2.2.4
-langchain==0.0.335
-openai==0.28.1
-PyPDF2==3.0.1
+openai==0.27.8
+python-dotenv==1.0.0
+langsmith==0.0.41
+aiohttp==3.8.5
+tiktoken==0.4.0
+asyncio==3.4.3
 uuid==1.30
+PyPDF2==3.0.1
