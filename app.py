@@ -3,7 +3,6 @@ from pinecone import Pinecone, ServerlessSpec
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
-from langsmith import Client
 import uuid
 import asyncio
 import aiohttp
@@ -24,39 +23,51 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = "gradientcyber"
-LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
+LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
 
 # Initialize clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
-langsmith_client = Client(api_key=LANGSMITH_API_KEY)
 
-# Helper functions
+# Try to initialize LangSmith client, but provide a fallback if it fails
+try:
+    from langsmith import Client
+    langsmith_client = Client(api_key=LANGSMITH_API_KEY)
+except Exception as e:
+    print(f"Failed to initialize LangSmith client: {e}")
+    langsmith_client = None
+
+# Helper function for tracing (with fallback)
+def trace_function(func):
+    def wrapper(*args, **kwargs):
+        if langsmith_client:
+            with langsmith_client.trace(project_name="RAG_System", name=func.__name__) as trace:
+                result = func(*args, **kwargs)
+                trace.add_metadata({"function": func.__name__})
+                return result
+        else:
+            return func(*args, **kwargs)
+    return wrapper
+
+@trace_function
 def generate_embedding(text: str) -> List[float]:
-    with langsmith_client.trace(project_name="RAG_System", name="generate_embedding") as trace:
-        response = openai_client.embeddings.create(
-            model="text-embedding-ada-002",
-            input=text
-        )
-        trace.add_metadata({"text_length": len(text), "embedding_dim": len(response.data[0].embedding)})
+    response = openai_client.embeddings.create(
+        model="text-embedding-ada-002",
+        input=text
+    )
     return response.data[0].embedding
 
+@trace_function
 def hybrid_search(index, query_embedding: List[float], query_text: str, top_k: int) -> List[Dict]:
-    with langsmith_client.trace(project_name="RAG_System", name="hybrid_search") as trace:
-        start_time = time.time()
-        results = index.query(
-            vector=query_embedding,
-            top_k=top_k,
-            include_metadata=True,
-            filter={"text": {"$contains": query_text}}
-        )
-        end_time = time.time()
-        trace.add_metadata({
-            "query_time": end_time - start_time,
-            "num_results": len(results['matches']),
-            "top_k": top_k
-        })
+    start_time = time.time()
+    results = index.query(
+        vector=query_embedding,
+        top_k=top_k,
+        include_metadata=True,
+        filter={"text": {"$contains": query_text}}
+    )
+    end_time = time.time()
     return results['matches']
 
 def process_results(results: List[Dict]) -> str:
@@ -66,23 +77,16 @@ def process_results(results: List[Dict]) -> str:
 def semantic_cache_key(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()
 
+@trace_function
 @lru_cache(maxsize=100)
 def generate_answer(prompt: str, context: str) -> str:
-    with langsmith_client.trace(project_name="RAG_System", name="generate_answer") as trace:
-        start_time = time.time()
-        response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant. Use the provided context to answer the user's question."},
-                {"role": "user", "content": f"Context: {context}\n\nQuestion: {prompt}"}
-            ]
-        )
-        end_time = time.time()
-        trace.add_metadata({
-            "response_time": end_time - start_time,
-            "prompt_tokens": len(tiktoken.encoding_for_model("gpt-3.5-turbo").encode(prompt)),
-            "context_tokens": len(tiktoken.encoding_for_model("gpt-3.5-turbo").encode(context))
-        })
+    response = openai_client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant. Use the provided context to answer the user's question."},
+            {"role": "user", "content": f"Context: {context}\n\nQuestion: {prompt}"}
+        ]
+    )
     return response.choices[0].message.content
 
 def format_answer(answer: str, results: List[Dict]) -> str:
@@ -123,6 +127,7 @@ async def generate_embedding_async(text: str, session) -> List[float]:
         result = await response.json()
         return result["data"][0]["embedding"]
 
+@trace_function
 def expand_query(query: str) -> str:
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -133,11 +138,13 @@ def expand_query(query: str) -> str:
     )
     return response.choices[0].message.content
 
+@trace_function
 def rerank_results(results: List[Dict], query: str) -> List[Dict]:
     # Implement re-ranking logic here
     # This is a placeholder implementation
     return sorted(results, key=lambda x: x['score'], reverse=True)
 
+@trace_function
 def apply_contextual_compression(context: str) -> str:
     # Implement contextual compression logic here
     # This is a placeholder implementation
@@ -146,7 +153,7 @@ def apply_contextual_compression(context: str) -> str:
 # Streamlit UI
 st.set_page_config(layout="wide", page_title="Gradient Cyber Bot", page_icon="🤖")
 
-# Custom CSS (as provided in your previous example)
+# Custom CSS
 st.markdown(
     """
     <style>
@@ -275,35 +282,27 @@ if prompt:
 
     # Process the query
     with st.spinner("Thinking..."):
-        with langsmith_client.trace(project_name="RAG_System", name="query_processing") as trace:
-            # Generate query embedding
-            query_embedding = generate_embedding(prompt)
-            
-            # Optionally expand the query
-            expanded_query = expand_query(prompt)
-            
-            # Retrieve relevant documents
-            results = hybrid_search(index, query_embedding, expanded_query, top_k=5)
-            
-            # Re-rank results
-            reranked_results = rerank_results(results, prompt)
-            
-            # Process and prepare context
-            context = process_results(reranked_results)
-            compressed_context = apply_contextual_compression(context)
-            
-            # Generate answer
-            answer = generate_answer(prompt, compressed_context)
-            
-            # Format and display answer
-            formatted_answer = format_answer(answer, reranked_results)
-            
-            # Log metrics
-            trace.add_metadata({
-                "query_tokens": len(tiktoken.encoding_for_model("gpt-3.5-turbo").encode(prompt)),
-                "response_tokens": len(tiktoken.encoding_for_model("gpt-3.5-turbo").encode(answer)),
-                "num_results": len(results)
-            })
+        # Generate query embedding
+        query_embedding = generate_embedding(prompt)
+        
+        # Optionally expand the query
+        expanded_query = expand_query(prompt)
+        
+        # Retrieve relevant documents
+        results = hybrid_search(index, query_embedding, expanded_query, top_k=5)
+        
+        # Re-rank results
+        reranked_results = rerank_results(results, prompt)
+        
+        # Process and prepare context
+        context = process_results(reranked_results)
+        compressed_context = apply_contextual_compression(context)
+        
+        # Generate answer
+        answer = generate_answer(prompt, compressed_context)
+        
+        # Format and display answer
+        formatted_answer = format_answer(answer, reranked_results)
 
     st.session_state.messages.append({"role": "assistant", "content": formatted_answer})
     with st.chat_message("assistant"):
