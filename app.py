@@ -1,229 +1,268 @@
 import streamlit as st
-import pinecone
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import ConversationalRetrievalChain
-from langchain.vectorstores import Pinecone as LangchainPinecone
-from langchain.document_loaders import PyPDFLoader
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.memory import ConversationBufferMemory
-from langchain.callbacks import LangChainTracer
-from langchain.prompts import PromptTemplate
+from pinecone import Pinecone
+from openai import OpenAI
 import os
-import tempfile
+from dotenv import load_dotenv
+from langsmith import Client
 import uuid
-import logging
-import socket
+import asyncio
+import aiohttp
+from typing import List, Dict
+import tempfile
+import tiktoken
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Load environment variables
+load_dotenv()
 
-# Streamlit page configuration
-st.set_page_config(layout="wide", page_title="Gradient Cyber QA Chatbot")
-
-# Set environment variables
+# Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = "gpt-4o"
+EMBEDDING_MODEL = "text-embedding-ada-002"
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_ENV = os.getenv("PINECONE_ENV")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
+LANGCHAIN_PROJECT = "gradient_cyber_bot"
+MAX_TOKENS = 4096
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+CACHE_EXPIRATION = 3600  # 1 hour
 
-# Verify environment variables
-if not all([OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_ENV, LANGCHAIN_API_KEY]):
-    st.error("Missing required environment variables. Please set all required API keys.")
-    st.stop()
+# Initialize clients
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index(PINECONE_INDEX_NAME)
+langsmith_client = Client()
 
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGCHAIN_PROJECT"] = "gradient_cyber_customer_bot"
+# Helper functions (unchanged)
+# ... (include all the helper functions from the previous implementation)
 
-# Function to check if a host is reachable
-def is_host_reachable(host, port=443, timeout=5):
-    try:
-        socket.create_connection((host, port), timeout=timeout)
-        return True
-    except OSError:
-        return False
+# Streamlit UI
+st.set_page_config(layout="wide", page_title="Gradient Cyber Bot", page_icon="🤖")
 
-# Initialize Pinecone
-try:
-    logger.info(f"Initializing Pinecone with environment: {PINECONE_ENV}")
+# Custom CSS for improved UI
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
     
-    # Check if Pinecone host is reachable
-    pinecone_host = f"controller.{PINECONE_ENV}.pinecone.io"
-    if not is_host_reachable(pinecone_host):
-        raise ConnectionError(f"Cannot reach Pinecone host: {pinecone_host}")
-    
-    pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
-    logger.info("Pinecone initialized successfully.")
-    
-    doc_index_name = "gradientcyber"
-    conv_index_name = "conversationhistory"
-
-    # Check if indices exist
-    existing_indexes = pinecone.list_indexes()
-    logger.info(f"Existing Pinecone indexes: {existing_indexes}")
-
-    if doc_index_name not in existing_indexes or conv_index_name not in existing_indexes:
-        logger.error(f"Required indexes do not exist in Pinecone.")
-        st.error(f"Required Pinecone indexes do not exist. Please ensure both '{doc_index_name}' and '{conv_index_name}' are created.")
-        st.stop()
-
-except Exception as e:
-    logger.error(f"Error initializing Pinecone: {str(e)}")
-    st.error(f"Error initializing Pinecone: {str(e)}")
-    
-    # Additional diagnostic information
-    st.error(f"Pinecone Environment: {PINECONE_ENV}")
-    st.error(f"Is Pinecone host reachable: {is_host_reachable(pinecone_host)}")
-    st.error("Please check your network connection and Pinecone environment settings.")
-    st.stop()
-
-# Initialize LangChain components
-try:
-    logger.info("Initializing LangChain components...")
-    embeddings = OpenAIEmbeddings()
-    doc_vectorstore = LangchainPinecone.from_existing_index(doc_index_name, embeddings)
-    conv_vectorstore = LangchainPinecone.from_existing_index(conv_index_name, embeddings)
-    llm = ChatOpenAI(temperature=0.3, model_name="gpt-4")
-    logger.info("LangChain components initialized successfully.")
-except Exception as e:
-    logger.error(f"Error initializing LangChain components: {str(e)}")
-    st.error(f"Error initializing LangChain components: {str(e)}")
-    st.stop()
-
-# Initialize LangSmith tracer
-tracer = LangChainTracer(project_name="gradient_cyber_customer_bot")
-
-# Initialize memory
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key="answer")
-
-# Custom prompt template
-qa_template = """
-You are an AI assistant tasked with answering questions based on the given context.
-Use the following pieces of context to answer the question at the end.
-If you don't know the answer, just say that you don't know, don't try to make up an answer.
-
-Context: {context}
-
-Question: {question}
-
-Answer: """
-
-qa_prompt = PromptTemplate(
-    template=qa_template, input_variables=["context", "question"]
+    body {
+        font-family: 'Roboto', sans-serif;
+        background-color: #f0f4f8;
+        color: #1e1e1e;
+    }
+    .reportview-container {
+        background-color: #f0f4f8;
+    }
+    .main .block-container {
+        max-width: 900px;
+        padding-top: 2rem;
+        padding-bottom: 6rem;
+        margin: auto;
+    }
+    .stChatMessage {
+        background-color: #ffffff;
+        border-radius: 15px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        transition: all 0.3s ease;
+    }
+    .stChatMessage:hover {
+        box-shadow: 0 6px 8px rgba(0,0,0,0.15);
+    }
+    .stChatMessage.user {
+        background-color: #e6f3ff;
+        border-left: 5px solid #2196F3;
+    }
+    .stChatMessage .content p {
+        margin-bottom: 0.5rem;
+        line-height: 1.6;
+    }
+    .stTextInput {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 1rem;
+        background-color: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(10px);
+        z-index: 1000;
+        box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+    }
+    .stTextInput > div {
+        display: flex;
+        justify-content: space-between;
+        max-width: 900px;
+        margin: auto;
+    }
+    .stTextInput input {
+        flex-grow: 1;
+        margin-right: 1rem;
+        border-radius: 25px;
+        border: 2px solid #2196F3;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        transition: all 0.3s ease;
+    }
+    .stTextInput input:focus {
+        box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.3);
+        outline: none;
+    }
+    .stButton button {
+        border-radius: 25px;
+        padding: 0.75rem 1.5rem;
+        background-color: #2196F3;
+        color: white;
+        font-weight: bold;
+        border: none;
+        transition: all 0.3s ease;
+    }
+    .stButton button:hover {
+        background-color: #1976D2;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .answer-card {
+        background-color: #ffffff;
+        border-radius: 15px;
+        padding: 2rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border-left: 5px solid #4CAF50;
+    }
+    .answer-card h3 {
+        color: #2c3e50;
+        margin-bottom: 1rem;
+        font-weight: 700;
+    }
+    .source-list {
+        margin-top: 1rem;
+        padding-left: 1.5rem;
+    }
+    .source-list li {
+        margin-bottom: 0.5rem;
+        color: #546E7A;
+    }
+    #scroll-to-bottom {
+        position: fixed;
+        bottom: 100px;
+        right: 30px;
+        width: 50px;
+        height: 50px;
+        background-color: #2196F3;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        font-size: 24px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        transition: all 0.3s ease;
+        z-index: 9999;
+    }
+    #scroll-to-bottom:hover {
+        background-color: #1976D2;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-# Initialize Conversational Retrieval Chain
-conv_qa_chain = ConversationalRetrievalChain.from_llm(
-    llm=llm,
-    retriever=doc_vectorstore.as_retriever(),
-    memory=memory,
-    combine_docs_chain_kwargs={"prompt": qa_prompt},
-    return_source_documents=True,
-    callbacks=[tracer]
-)
+# Streamlit app title
+st.title("🤖 Gradient Cyber Bot")
 
-def process_document(file):
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-        tmp_file.write(file.getvalue())
-        tmp_file_path = tmp_file.name
-
-    loader = PyPDFLoader(tmp_file_path)
-    documents = loader.load()
-    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-    texts = text_splitter.split_documents(documents)
+# Sidebar
+with st.sidebar:
+    st.title("Options")
     
-    os.unlink(tmp_file_path)
-    return texts
-
-def upsert_to_pinecone(texts):
-    doc_vectorstore.add_documents(texts)
-
-def save_conversation(question, answer):
-    conversation_id = str(uuid.uuid4())
-    conv_vectorstore.add_texts(
-        texts=[f"Q: {question}\nA: {answer}"],
-        metadatas=[{"conversation_id": conversation_id}],
-        ids=[conversation_id]
-    )
-
-def get_conversation_history():
-    results = conv_vectorstore.similarity_search("", k=100)
-    return [doc.page_content for doc in results]
-
-def display_chat_message(text, is_user=False):
-    if is_user:
-        st.markdown(f"""
-        <div style="background-color: #e6f3ff; border-radius: 10px; padding: 10px; margin-bottom: 10px;">
-            <strong>You:</strong> {text}
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div style="background-color: #e6ffe6; border-radius: 10px; padding: 10px; margin-bottom: 10px;">
-            <strong>AI:</strong> {text}
-        </div>
-        """, unsafe_allow_html=True)
-
-def main():
-    st.title("Gradient Cyber QA Chatbot")
-
-    # Sidebar
-    st.sidebar.title("Document Upload")
+    # File upload
+    uploaded_file = st.file_uploader("Upload a document", type=["txt", "pdf"])
     
-    # File upload in sidebar
-    uploaded_files = st.sidebar.file_uploader("Choose PDF files", accept_multiple_files=True, type=['pdf'])
-
-    if uploaded_files:
-        for file in uploaded_files:
-            texts = process_document(file)
-            upsert_to_pinecone(texts)
-            st.sidebar.success(f"Processed and uploaded: {file.name}")
-
-    # Buttons in sidebar
-    if st.sidebar.button("Clear Conversation"):
-        memory.clear()
-        st.session_state.messages = []
-        st.sidebar.success("Conversation cleared!")
-
-    if st.sidebar.button("View Conversation History"):
-        history = get_conversation_history()
-        st.sidebar.subheader("Conversation History")
-        for conversation in history:
-            st.sidebar.text(conversation)
-
-    if st.sidebar.button("Reload"):
-        st.experimental_rerun()
-
-    # Main chat interface
-    if 'messages' not in st.session_state:
+    # Reset button
+    if st.button("Reset Conversation"):
         st.session_state.messages = []
 
-    # Display chat history
-    for message in st.session_state.messages:
-        display_chat_message(message['text'], message['is_user'])
+# Initialize conversation history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    # Chat input
-    query = st.text_input("Ask a question about the uploaded documents:")
-    if query:
-        display_chat_message(query, is_user=True)
-        st.session_state.messages.append({"text": query, "is_user": True})
+# Display conversation history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-        result = conv_qa_chain({"question": query})
-        answer = result['answer']
-        sources = result.get('source_documents', [])
+# Main chat input
+prompt = st.chat_input("What is your question?")
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-        display_chat_message(answer, is_user=False)
-        st.session_state.messages.append({"text": answer, "is_user": False})
+    # Process the query
+    with st.spinner("Thinking..."):
+        # Start LangSmith trace
+        with langsmith_client.trace(project_name=LANGCHAIN_PROJECT, name="query_processing") as trace:
+            # Generate query embedding
+            query_embedding = generate_embedding(prompt)
+            
+            # Retrieve relevant documents
+            results = hybrid_search(index, query_embedding, prompt, top_k=5)
+            
+            # Process and prepare context
+            context = process_results(results)
+            
+            # Generate answer
+            answer = generate_answer(prompt, context)
+            
+            # Format and display answer
+            formatted_answer = format_answer(answer, results)
+            
+            # Log metrics
+            trace.add_metadata({
+                "query_tokens": count_tokens(prompt),
+                "response_tokens": count_tokens(answer),
+                "num_results": len(results)
+            })
 
-        # Save conversation to Pinecone
-        save_conversation(query, answer)
+    st.session_state.messages.append({"role": "assistant", "content": formatted_answer})
+    with st.chat_message("assistant"):
+        st.markdown(formatted_answer)
 
-        if sources:
-            st.subheader("Sources:")
-            for source in sources:
-                st.write(f"- {source.metadata.get('source', 'Unknown source')}")
+# Handle file upload
+if uploaded_file is not None:
+    with st.spinner("Processing and uploading document..."):
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_file_path = tmp_file.name
+
+        # Process and upload the document
+        chunks = process_document(tmp_file_path)
+        asyncio.run(upload_to_pinecone(chunks, index))
+
+        os.unlink(tmp_file_path)
+    st.sidebar.success("Document processed and uploaded successfully!")
+
+# Add scroll to bottom button
+st.markdown("""
+<button id="scroll-to-bottom">↓</button>
+<script>
+    var button = document.querySelector('#scroll-to-bottom');
+    button.addEventListener('click', function() {
+        window.scrollTo(0, document.body.scrollHeight);
+    });
+    window.addEventListener('scroll', function() {
+        if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight) {
+            button.style.display = 'none';
+        } else {
+            button.style.display = 'flex';
+        }
+    });
+</script>
+""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    main()
+    st.run()
