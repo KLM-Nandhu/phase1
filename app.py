@@ -1,5 +1,5 @@
 import streamlit as st
-from pinecone import Pinecone
+from pinecone import Pinecone, ServerlessSpec
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
@@ -23,34 +23,13 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = "gradientcyber"
-LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
 
 # Initialize clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 
-# Try to initialize LangSmith client, but provide a fallback if it fails
-try:
-    from langchain import Client
-    langchain_client = Client(api_key=LANGSMITH_API_KEY)
-except Exception as e:
-    print(f"Failed to initialize Langchain client: {e}")
-    langchain_client = None
-
-# Helper function for tracing (with fallback)
-def trace_function(func):
-    def wrapper(*args, **kwargs):
-        if langchain_client:
-            with langchain_client.trace(project_name="RAG_System", name=func.__name__) as trace:
-                result = func(*args, **kwargs)
-                trace.add_metadata({"function": func.__name__})
-                return result
-        else:
-            return func(*args, **kwargs)
-    return wrapper
-
-@trace_function
+# Helper functions
 def generate_embedding(text: str) -> List[float]:
     response = openai_client.embeddings.create(
         model="text-embedding-ada-002",
@@ -58,7 +37,6 @@ def generate_embedding(text: str) -> List[float]:
     )
     return response.data[0].embedding
 
-@trace_function
 def hybrid_search(index, query_embedding: List[float], query_text: str, top_k: int) -> List[Dict]:
     start_time = time.time()
     results = index.query(
@@ -77,7 +55,6 @@ def process_results(results: List[Dict]) -> str:
 def semantic_cache_key(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()
 
-@trace_function
 @lru_cache(maxsize=100)
 def generate_answer(prompt: str, context: str) -> str:
     response = openai_client.chat.completions.create(
@@ -127,7 +104,6 @@ async def generate_embedding_async(text: str, session) -> List[float]:
         result = await response.json()
         return result["data"][0]["embedding"]
 
-@trace_function
 def expand_query(query: str) -> str:
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -138,13 +114,11 @@ def expand_query(query: str) -> str:
     )
     return response.choices[0].message.content
 
-@trace_function
 def rerank_results(results: List[Dict], query: str) -> List[Dict]:
     # Implement re-ranking logic here
     # This is a placeholder implementation
     return sorted(results, key=lambda x: x['score'], reverse=True)
 
-@trace_function
 def apply_contextual_compression(context: str) -> str:
     # Implement contextual compression logic here
     # This is a placeholder implementation
@@ -282,15 +256,22 @@ if prompt:
 
     # Process the query
     with st.spinner("Thinking..."):
+        # Step 1: Setup and Configuration
+        # LangChain setup is not explicitly shown here, but it's conceptually part of the initial setup
+
+        # Step 2: Data Preparation and Embedding
         # Generate query embedding
         query_embedding = generate_embedding(prompt)
         
+        # Step 3: Query Processing
         # Optionally expand the query
         expanded_query = expand_query(prompt)
         
+        # Step 4: Retrieval with Pinecone Serverless
         # Retrieve relevant documents
         results = hybrid_search(index, query_embedding, expanded_query, top_k=5)
         
+        # Step 5: Context Processing
         # Re-rank results
         reranked_results = rerank_results(results, prompt)
         
@@ -298,11 +279,19 @@ if prompt:
         context = process_results(reranked_results)
         compressed_context = apply_contextual_compression(context)
         
+        # Step 6: Answer Generation
         # Generate answer
         answer = generate_answer(prompt, compressed_context)
         
+        # Step 7: Post-processing and Formatting
         # Format and display answer
         formatted_answer = format_answer(answer, reranked_results)
+
+        # Step 8: Caching and Optimization
+        # Caching is implemented using lru_cache decorators on some functions
+
+        # Step 9: Continuous Improvement
+        # This would involve analyzing user feedback and refining the system over time
 
     st.session_state.messages.append({"role": "assistant", "content": formatted_answer})
     with st.chat_message("assistant"):
@@ -321,3 +310,5 @@ if uploaded_file is not None:
 
         os.unlink(tmp_file_path)
     st.sidebar.success("Document processed and uploaded successfully!")
+
+# Steps 10-16 are conceptual and would involve further development, monitoring, and maintenance of the system
