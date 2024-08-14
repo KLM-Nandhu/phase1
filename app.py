@@ -372,3 +372,110 @@ def check_semantic_cache(query):
             similarity = cosine_similarity([query_embedding], [cached_embedding])[0][0]
             if similarity > 0.95:  # Threshold for semantic similarity
                 return cached_response
+        return None  # Return None if no similar query is found in the cache
+    except Exception as e:
+        logger.error(f"Error in checking semantic cache: {str(e)}")
+        return None  # Return None if there's an error
+
+# Main chat interface
+async def process_query(prompt):
+    try:
+        cached_response = check_semantic_cache(prompt)
+        if cached_response:
+            return f"(Cached) {cached_response}"
+
+        expanded_queries = expand_query(prompt)
+        contexts = []
+        
+        async def process_single_query(query):
+            context, results = await get_context(query)
+            re_ranked = re_rank_results(query, results)
+            compressed = compress_context(" ".join([r['metadata'].get("text", "") for r in re_ranked[:2]]), query)
+            return compressed
+
+        with ThreadPoolExecutor() as executor:
+            loop = asyncio.get_event_loop()
+            contexts = await asyncio.gather(*[loop.run_in_executor(executor, process_single_query, query) for query in expanded_queries])
+
+        full_context = " ".join(contexts)
+        full_prompt = f"Context: {full_context}\n\nQuestion: {prompt}\n\nAnswer:"
+        response = await generate_response(full_prompt)
+        
+        # Update semantic cache
+        semantic_cache[prompt] = (get_embedding(prompt), response)
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error in processing query: {str(e)}")
+        return "I'm sorry, but I encountered an error while processing your query. Please try again."
+
+if prompt := st.chat_input("What is your question?"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        response = asyncio.run(process_query(prompt))
+        st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+    # Update conversation history
+    st.session_state.conversation_history.append({"prompt": prompt, "response": response})
+
+# Display full conversation history
+st.sidebar.title("Conversation History")
+for i, exchange in enumerate(st.session_state.conversation_history):
+    st.sidebar.subheader(f"Exchange {i+1}")
+    st.sidebar.write(f"User: {exchange['prompt']}")
+    st.sidebar.write(f"Assistant: {exchange['response']}")
+    st.sidebar.write("---")
+
+# LangSmith Integration for Monitoring
+@st.cache_data
+def get_langsmith_metrics():
+    # This is a placeholder. In a real implementation, you would fetch metrics from LangSmith API
+    return {
+        "average_response_time": 1.5,
+        "total_queries": 100,
+        "successful_queries": 95,
+    }
+
+# Display LangSmith metrics
+st.sidebar.title("System Metrics")
+metrics = get_langsmith_metrics()
+st.sidebar.metric("Avg Response Time", f"{metrics['average_response_time']:.2f}s")
+st.sidebar.metric("Total Queries", metrics['total_queries'])
+st.sidebar.metric("Success Rate", f"{metrics['successful_queries'] / metrics['total_queries'] * 100:.1f}%")
+
+# Add a feedback mechanism
+st.sidebar.title("Feedback")
+feedback = st.sidebar.radio("Was this response helpful?", ("Yes", "No"))
+if st.sidebar.button("Submit Feedback"):
+    # In a real implementation, you would send this feedback to a database or API
+    st.sidebar.success("Thank you for your feedback!")
+
+# Add a scroll to bottom button
+st.markdown("""
+<script>
+    var mybutton = document.getElementById("scroll-to-bottom");
+    window.onscroll = function() {scrollFunction()};
+
+    function scrollFunction() {
+        if (document.body.scrollTop > 20 || document.documentElement.scrollTop > 20) {
+            mybutton.style.display = "flex";
+        } else {
+            mybutton.style.display = "none";
+        }
+    }
+
+    function scrollToBottom() {
+        window.scrollTo(0, document.body.scrollHeight);
+    }
+</script>
+""", unsafe_allow_html=True)
+
+st.markdown('<button onclick="scrollToBottom()" id="scroll-to-bottom" title="Go to bottom">▼</button>', unsafe_allow_html=True)
+
+# Main execution
+if __name__ == "__main__":
+    st.set_page_config(page_title="Gradient Cyber Bot", page_icon="🤖", layout="wide")
