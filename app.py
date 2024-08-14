@@ -15,6 +15,11 @@ from functools import lru_cache
 import hashlib
 import json
 import PyPDF2
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -28,15 +33,15 @@ LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
 # Initialize clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(PINECONE_INDEX_NAME)
+index = pc.Index(PINECONE_INDEX_NAME, serverless=ServerlessSpec())
 
 # Try to initialize LangSmith client, but provide a fallback if it fails
 try:
     from langsmith import Client
-    langsmith_client = Client(api_key=LANGSMITH_API_KEY)
+    langchain_client = Client(api_key=LANGCHAIN_API_KEY)
 except Exception as e:
-    print(f"Failed to initialize LangSmith client: {e}")
-    langsmith_client = None
+    logger.warning(f"Failed to initialize LangSmith client: {e}")
+    langchain_client = None
 
 # Helper function for tracing (with fallback)
 def trace_function(func):
@@ -60,15 +65,28 @@ def generate_embedding(text: str) -> List[float]:
 
 @trace_function
 def hybrid_search(index, query_embedding: List[float], query_text: str, top_k: int) -> List[Dict]:
-    start_time = time.time()
-    results = index.query(
-        vector=query_embedding,
-        top_k=top_k,
-        include_metadata=True,
-        filter={"text": {"$contains": query_text}}
-    )
-    end_time = time.time()
-    return results['matches']
+    try:
+        logger.info(f"Querying Pinecone with top_k={top_k}")
+        logger.info(f"Query text: {query_text}")
+        logger.info(f"Query embedding shape: {len(query_embedding)}")
+        
+        start_time = time.time()
+        results = index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            include_metadata=True,
+            filter={"text": {"$contains": query_text}}
+        )
+        end_time = time.time()
+        
+        logger.info(f"Query time: {end_time - start_time} seconds")
+        logger.info(f"Number of results: {len(results['matches'])}")
+        
+        return results['matches']
+    except Exception as e:
+        logger.error(f"Error in hybrid_search: {str(e)}")
+        st.error(f"An error occurred while searching: {str(e)}")
+        return []
 
 def process_results(results: List[Dict]) -> str:
     return " ".join([result['metadata'].get("text", "") for result in results])
@@ -282,27 +300,37 @@ if prompt:
 
     # Process the query
     with st.spinner("Thinking..."):
-        # Generate query embedding
-        query_embedding = generate_embedding(prompt)
-        
-        # Optionally expand the query
-        expanded_query = expand_query(prompt)
-        
-        # Retrieve relevant documents
-        results = hybrid_search(index, query_embedding, expanded_query, top_k=5)
-        
-        # Re-rank results
-        reranked_results = rerank_results(results, prompt)
-        
-        # Process and prepare context
-        context = process_results(reranked_results)
-        compressed_context = apply_contextual_compression(context)
-        
-        # Generate answer
-        answer = generate_answer(prompt, compressed_context)
-        
-        # Format and display answer
-        formatted_answer = format_answer(answer, reranked_results)
+        try:
+            # Generate query embedding
+            query_embedding = generate_embedding(prompt)
+            
+            # Optionally expand the query
+            expanded_query = expand_query(prompt)
+            
+            # Retrieve relevant documents
+            results = hybrid_search(index, query_embedding, expanded_query, top_k=5)
+            
+            if not results:
+                st.warning("No results found. The system might be experiencing issues.")
+                formatted_answer = "I'm sorry, but I couldn't retrieve any relevant information at the moment. Please try again later or rephrase your question."
+            else:
+                # Re-rank results
+                reranked_results = rerank_results(results, prompt)
+                
+                # Process and prepare context
+                context = process_results(reranked_results)
+                compressed_context = apply_contextual_compression(context)
+                
+                # Generate answer
+                answer = generate_answer(prompt, compressed_context)
+                
+                # Format and display answer
+                formatted_answer = format_answer(answer, reranked_results)
+
+        except Exception as e:
+            logger.error(f"Error in query processing: {str(e)}")
+            st.error(f"An error occurred while processing your query: {str(e)}")
+            formatted_answer = "I'm sorry, but an error occurred while processing your request. Please try again later."
 
     st.session_state.messages.append({"role": "assistant", "content": formatted_answer})
     with st.chat_message("assistant"):
@@ -315,9 +343,13 @@ if uploaded_file is not None:
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
 
-        # Process and upload the document
-        chunks = process_document(tmp_file_path)
-        asyncio.run(upload_to_pinecone(chunks, index))
-
-        os.unlink(tmp_file_path)
-    st.sidebar.success("Document processed and uploaded successfully!")
+        try:
+            # Process and upload the document
+            chunks = process_document(tmp_file_path)
+            asyncio.run(upload_to_pinecone(chunks, index))
+            st.sidebar.success("Document processed and uploaded successfully!")
+        except Exception as e:
+            logger.error(f"Error in document processing: {str(e)}")
+            st.sidebar.error(f"An error occurred while processing the document: {str(e)}")
+        finally:
+            os.unlink(tmp_file_path)
