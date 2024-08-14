@@ -1,8 +1,9 @@
 streamlit
-pinecone-client
+pinecone-client>=2.2.2
 openai
 python-dotenv
 langsmith
 PyPDF2
 scikit-learn
 numpy
+asyncio
