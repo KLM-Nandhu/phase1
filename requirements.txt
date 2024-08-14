@@ -1,6 +1,6 @@
 streamlit
 pinecone-client>=2.2.2
-openai
+openai==0.28
 python-dotenv
 langsmith
 PyPDF2
