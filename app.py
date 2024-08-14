@@ -1,5 +1,4 @@
 import streamlit as st
-import pinecone
 import openai
 from langsmith import Client
 from langsmith.run_trees import RunTree
@@ -14,13 +13,28 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import time
 import asyncio
+from pinecone import Pinecone, ServerlessSpec
 
 # Load environment variables
 load_dotenv()
 
-# Initialize Pinecone (Serverless)
-pinecone.init(api_key=os.getenv("PINECONE_API_KEY"))
-index = pinecone.Index(os.getenv("PINECONE_INDEX_NAME"))
+# Initialize Pinecone
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index_name = os.getenv("PINECONE_INDEX_NAME")
+
+# Ensure the index exists
+if index_name not in pc.list_indexes().names():
+    pc.create_index(
+        name=index_name,
+        dimension=1536,  # OpenAI's ada-002 model uses 1536 dimensions
+        metric='cosine',
+        spec=ServerlessSpec(
+            cloud='aws',
+            region='us-west-2'  # Adjust this to your preferred region
+        )
+    )
+
+index = pc.Index(index_name)
 
 # Initialize OpenAI
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -28,10 +42,10 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 # Initialize LangSmith
 langsmith_client = Client()
 
-# Custom CSS (as provided earlier)
+# Custom CSS
 st.markdown(
     """
-      <style>
+    <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
     
     body {
@@ -250,18 +264,18 @@ async def get_context(query, k=3):
         results = index.query(vector=query_embedding, top_k=k, include_metadata=True)
         query_time = time.time() - start_time
         tracer.add_metadata("query_time", query_time)
-        context = " ".join([result.metadata.get("text", "") for result in results.matches])
-        return context, results.matches
+        context = " ".join([match['metadata'].get("text", "") for match in results['matches']])
+        return context, results['matches']
 
 # Function to re-rank results
 def re_rank_results(query, results):
     with RunTree.with_langsmith_tracer(langsmith_client, project_name="RAG_System") as tracer:
-        texts = [result.metadata.get("text", "") for result in results]
+        texts = [result['metadata'].get("text", "") for result in results]
         tfidf = TfidfVectorizer().fit_transform([query] + texts)
         cosine_similarities = cosine_similarity(tfidf[0:1], tfidf[1:]).flatten()
         ranked_indices = np.argsort(cosine_similarities)[::-1]
         re_ranked_results = [results[i] for i in ranked_indices]
-        tracer.add_metadata("re_ranked_results", [r.id for r in re_ranked_results])
+        tracer.add_metadata("re_ranked_results", [r['id'] for r in re_ranked_results])
         return re_ranked_results
 
 # Function for contextual compression
@@ -317,7 +331,7 @@ async def process_query(prompt):
     async def process_single_query(query):
         context, results = await get_context(query)
         re_ranked = re_rank_results(query, results)
-        compressed = compress_context(" ".join([r.metadata.get("text", "") for r in re_ranked[:2]]), query)
+        compressed = compress_context(" ".join([r['metadata'].get("text", "") for r in re_ranked[:2]]), query)
         return compressed
 
     with ThreadPoolExecutor() as executor:
@@ -355,6 +369,7 @@ for i, exchange in enumerate(st.session_state.conversation_history):
     st.sidebar.write("---")
 
 # LangSmith Integration for Monitoring
+# LangSmith Integration for Monitoring
 @st.cache_data
 def get_langsmith_metrics():
     # This is a placeholder. In a real implementation, you would fetch metrics from LangSmith API
@@ -370,3 +385,37 @@ metrics = get_langsmith_metrics()
 st.sidebar.metric("Avg Response Time", f"{metrics['average_response_time']:.2f}s")
 st.sidebar.metric("Total Queries", metrics['total_queries'])
 st.sidebar.metric("Success Rate", f"{metrics['successful_queries'] / metrics['total_queries'] * 100:.1f}%")
+
+# Add a feedback mechanism
+st.sidebar.title("Feedback")
+feedback = st.sidebar.radio("Was this response helpful?", ("Yes", "No"))
+if st.sidebar.button("Submit Feedback"):
+    # In a real implementation, you would send this feedback to a database or API
+    st.sidebar.success("Thank you for your feedback!")
+
+# Add a scroll to bottom button
+st.markdown("""
+<script>
+    var mybutton = document.getElementById("scroll-to-bottom");
+    window.onscroll = function() {scrollFunction()};
+
+    function scrollFunction() {
+        if (document.body.scrollTop > 20 || document.documentElement.scrollTop > 20) {
+            mybutton.style.display = "flex";
+        } else {
+            mybutton.style.display = "none";
+        }
+    }
+
+    function scrollToBottom() {
+        window.scrollTo(0, document.body.scrollHeight);
+    }
+</script>
+""", unsafe_allow_html=True)
+
+st.markdown('<button onclick="scrollToBottom()" id="scroll-to-bottom" title="Go to bottom">▼</button>', unsafe_allow_html=True)
+
+# Main execution
+if __name__ == "__main__":
+    st.set_page_config(page_title="Gradient Cyber Bot", page_icon="🤖", layout="wide")
+    main()
