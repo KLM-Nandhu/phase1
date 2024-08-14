@@ -322,7 +322,3 @@ if uploaded_file is not None:
 
         os.unlink(tmp_file_path)
     st.sidebar.success("Document processed and uploaded successfully!")
-
-# Run the Streamlit app
-if __name__ == "__main__":
-    st.run()
