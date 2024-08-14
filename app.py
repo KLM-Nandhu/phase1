@@ -383,4 +383,13 @@ if prompt := st.chat_input("What is your question?"):
 
 # Display full conversation history
 st.sidebar.title("Conversation History")
-for i, exchange in enumerate(
+for i, exchange in enumerate(st.session_state.conversation_history):
+    st.sidebar.subheader(f"Exchange {i+1}")
+    st.sidebar.write(f"User: {exchange['prompt']}")
+    st.sidebar.write(f"Assistant: {exchange['response']}")
+    st.sidebar.write("---")
+
+# Main execution
+if __name__ == "__main__":
+    st.write("Welcome to the Gradient Cyber Bot! Ask me anything about cybersecurity.")
+    st.write("You can also upload documents using the file uploader in the sidebar.")
