@@ -6,4 +6,3 @@ langsmith
 aiohttp
 tiktoken
 PyPDF2
-Pillow
