@@ -1,5 +1,5 @@
 import streamlit as st
-import openai
+from openai import OpenAI
 import os
 from dotenv import load_dotenv
 import uuid
@@ -27,7 +27,6 @@ st.set_page_config(page_title="Gradient Cyber Bot", page_icon="🤖", layout="wi
 try:
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     index_name = "gradientcyber"
-
     # Check if the index exists
     existing_indexes = pc.list_indexes().names()
     
@@ -40,7 +39,7 @@ try:
                 metric='cosine',
                 spec=ServerlessSpec(
                     cloud='aws',
-                    region='us-west-1'  # Adjust this to your preferred region
+                    region='us-west-2'  # Adjust this to your preferred region
                 )
             )
             logger.info(f"Successfully created index '{index_name}'.")
@@ -58,11 +57,121 @@ except Exception as e:
     st.error(f"Failed to initialize Pinecone. Please check your API key and try again. Error: {str(e)}")
     st.stop()
 
-# Initialize OpenAI
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Streamlit app title
 st.title("🤖 Gradient Cyber Bot")
+
+# Custom CSS
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+    
+    body {
+        font-family: 'Roboto', sans-serif;
+        background-color: #f0f4f8;
+        color: #1e1e1e;
+    }
+    .reportview-container {
+        background-color: #f0f4f8;
+    }
+    .main .block-container {
+        max-width: 900px;
+        padding-top: 2rem;
+        padding-bottom: 6rem;
+        margin: auto;
+    }
+    .stChatMessage {
+        background-color: #ffffff;
+        border-radius: 15px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        transition: all 0.3s ease;
+    }
+    .stChatMessage:hover {
+        box-shadow: 0 6px 8px rgba(0,0,0,0.15);
+    }
+    .stChatMessage.user {
+        background-color: #e6f3ff;
+        border-left: 5px solid #2196F3;
+    }
+    .stChatMessage .content p {
+        margin-bottom: 0.5rem;
+        line-height: 1.6;
+    }
+    .stTextInput {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 1rem;
+        background-color: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(10px);
+        z-index: 1000;
+        box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+    }
+    .stTextInput > div {
+        display: flex;
+        justify-content: space-between;
+        max-width: 900px;
+        margin: auto;
+    }
+    .stTextInput input {
+        flex-grow: 1;
+        margin-right: 1rem;
+        border-radius: 25px;
+        border: 2px solid #2196F3;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        transition: all 0.3s ease;
+    }
+    .stTextInput input:focus {
+        box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.3);
+        outline: none;
+    }
+    .stButton button {
+        border-radius: 25px;
+        padding: 0.75rem 1.5rem;
+        background-color: #2196F3;
+        color: white;
+        font-weight: bold;
+        border: none;
+        transition: all 0.3s ease;
+    }
+    .stButton button:hover {
+        background-color: #1976D2;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .answer-card {
+        background-color: #ffffff;
+        border-radius: 15px;
+        padding: 2rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border-left: 5px solid #4CAF50;
+    }
+    .answer-card h3 {
+        color: #2c3e50;
+        margin-bottom: 1rem;
+        font-weight: 700;
+    }
+    .source-list {
+        margin-top: 1rem;
+        padding-left: 1.5rem;
+    }
+    .source-list li {
+        margin-bottom: 0.5rem;
+        color: #546E7A;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Sidebar
 st.sidebar.title("Settings")
@@ -89,11 +198,11 @@ for message in st.session_state.messages:
 # Function to get embeddings
 def get_embedding(text):
     try:
-        response = openai.Embedding.create(
-            input=text,
-            model="text-embedding-ada-002"
+        response = client.embeddings.create(
+            model="text-embedding-ada-002",
+            input=text
         )
-        return response['data'][0]['embedding']
+        return response.data[0].embedding
     except Exception as e:
         logger.error(f"Error in getting embedding: {str(e)}")
         raise
@@ -140,7 +249,7 @@ if uploaded_file:
 # Function to expand query
 def expand_query(query):
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that generates related search queries."},
@@ -148,7 +257,7 @@ def expand_query(query):
             ],
             max_tokens=100
         )
-        expanded_queries = response.choices[0].message['content'].split('\n')
+        expanded_queries = response.choices[0].message.content.split('\n')
         return [query] + expanded_queries
     except Exception as e:
         logger.error(f"Error in expanding query: {str(e)}")
@@ -181,7 +290,7 @@ def re_rank_results(query, results):
 # Function for contextual compression
 def compress_context(context, query):
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that summarizes information."},
@@ -189,7 +298,7 @@ def compress_context(context, query):
             ],
             max_tokens=150
         )
-        compressed_context = response.choices[0].message['content']
+        compressed_context = response.choices[0].message.content
         return compressed_context
     except Exception as e:
         logger.error(f"Error in compressing context: {str(e)}")
@@ -198,7 +307,7 @@ def compress_context(context, query):
 # Function to generate response using OpenAI
 async def generate_response(prompt):
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
@@ -206,7 +315,7 @@ async def generate_response(prompt):
             ],
             max_tokens=150
         )
-        return response.choices[0].message['content']
+        return response.choices[0].message.content
     except Exception as e:
         logger.error(f"Error in generating response: {str(e)}")
         return "I'm sorry, but I encountered an error while generating a response. Please try again."
@@ -274,8 +383,4 @@ if prompt := st.chat_input("What is your question?"):
 
 # Display full conversation history
 st.sidebar.title("Conversation History")
-for i, exchange in enumerate(st.session_state.conversation_history):
-    st.sidebar.subheader(f"Exchange {i+1}")
-    st.sidebar.write(f"User: {exchange['prompt']}")
-    st.sidebar.write(f"Assistant: {exchange['response']}")
-    st.sidebar.write("---")
+for i, exchange in enumerate(
