@@ -20,7 +20,7 @@ if index_name not in pc.list_indexes():
         dimension=1536,  # dimensionality of text-embedding-ada-002
         spec=ServerlessSpec(
             cloud='aws',
-            region='us-west-2'  # replace with your preferred region
+            region='us-west-1'  # replace with your preferred region
         )
     )
 
