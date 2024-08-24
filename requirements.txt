@@ -1,9 +1,5 @@
 streamlit
-pinecone-client>=2.2.2
-openai==0.28
+pinecone-client
+openai
 python-dotenv
-langsmith
 PyPDF2
-scikit-learn
-numpy
-asyncio
