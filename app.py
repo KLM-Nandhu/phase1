@@ -2,30 +2,21 @@ import os
 import json
 import PyPDF2
 import streamlit as st
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 import openai
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Constants
+INDEX_NAME = "gradientcyber"
+
 # Initialize OpenAI and Pinecone
 openai.api_key = os.getenv("OPENAI_API_KEY")
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
-INDEX_NAME = "gradientcyber"
-# If the index doesn't exist, create it
-if index_name not in pc.list_indexes():
-    pc.create_index(
-        index_name,
-        dimension=1536,  # dimensionality of text-embedding-ada-002
-        spec=ServerlessSpec(
-            cloud='aws',
-            region='us-west-1'  # replace with your preferred region
-        )
-    )
-
-# Connect to the index
-index = pc.Index(index_name)
+# Connect to the existing index
+index = pc.Index(INDEX_NAME)
 
 def extract_and_structure_pdf(pdf_file):
     pdf_reader = PyPDF2.PdfReader(pdf_file)
@@ -75,7 +66,7 @@ def search_pinecone(query, top_k=3):
 def generate_response(query, context):
     prompt = f"Based on the following context, please answer the question: {query}\n\nContext:\n{context}"
     response = openai.ChatCompletion.create(
-        model="gpt-4o",
+        model="gpt-4",
         messages=[
             {"role": "system", "content": "You are a helpful assistant that answers questions based on the given context."},
             {"role": "user", "content": prompt}
@@ -83,7 +74,7 @@ def generate_response(query, context):
         max_tokens=150,
         n=1,
         stop=None,
-        temperature=0.3,
+        temperature=0.7,
     )
     return response.choices[0].message['content'].strip()
 
