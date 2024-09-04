@@ -66,7 +66,7 @@ def search_pinecone(query, top_k=3):
 def generate_response(query, context):
     prompt = f"Based on the following context, please answer the question: {query}\n\nContext:\n{context}"
     response = openai.ChatCompletion.create(
-        model="gpt-4",
+        model="gpt-3.5 turbo",
         messages=[
             {"role": "system", "content": "You are a helpful assistant that answers questions based on the given context."},
             {"role": "user", "content": prompt}
